@@ -56,7 +56,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { usePlatformStore } from '@/store/platform'
 import ActivityView from '@/components/ActivityView.vue'
 import PointsCenter from '@/components/PointsCenter.vue'
@@ -82,9 +82,23 @@ const tabs = [
 const currentActivity = computed(() => store.activities.find((a) => a.id === currentActivityId.value))
 const activeExists = computed(() => store.activities.some((a) => a.status === 'running'))
 
+// 统一业务日切换：页面常开时定时器轮询；页面从后台重新可见时立即检查
+let dayTimer = null
+const syncDay = () => store.syncBusinessDay(true)
+const onVisibility = () => {
+  if (document.visibilityState === 'visible') syncDay()
+}
+
 onMounted(() => {
   store.init()
   if (store.activities.length) currentActivityId.value = store.activities[0].id
+  dayTimer = setInterval(syncDay, 30 * 1000)
+  document.addEventListener('visibilitychange', onVisibility)
+})
+
+onBeforeUnmount(() => {
+  if (dayTimer) clearInterval(dayTimer)
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 </script>
 

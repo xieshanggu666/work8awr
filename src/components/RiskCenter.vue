@@ -393,6 +393,7 @@ function doRevoke(o) {
 .l-action.appeal { background: rgba(41,98,255,0.16); color: #82b1ff; }
 .l-action.config { background: rgba(171,71,188,0.16); color: #ce93d8; }
 .l-action.switch-role { background: rgba(120,160,220,0.12); color: #8ba2c8; }
+.l-action.day-rollover { background: rgba(129,212,250,0.14); color: #81d4fa; }
 .l-detail { flex: 1; color: #c6d2e6; line-height: 1.4; }
 .l-who { font-size: 11px; color: #9db0d0; flex-shrink: 0; }
 .l-time { font-size: 11px; color: #6f84ab; flex-shrink: 0; }

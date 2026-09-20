@@ -16,7 +16,11 @@ function nowTime() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 function todayStr() {
-  return new Date().toISOString().slice(0, 10)
+  // 业务日按本地自然日计算（与 nowTime 的本地时间保持一致，避免 UTC 偏移导致跨日错配）
+  const d = new Date()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
 }
 // 今天某时刻（h:m）的时间戳，用于构造演示数据/风控窗口比较
 function todayAt(h, m = 0) {
@@ -125,7 +129,39 @@ export const usePlatformStore = defineStore('platform', {
         claimed: false
       }))
       this.goods = SHOP_GOODS.map((g) => ({ ...g, frozen: 0 }))
+      // 以当前真实业务日为种子数据的日期基准（避免种子单据的日期落在"昨天"）
+      this.todayDate = todayStr()
       this.seedRiskData()
+    },
+
+    // ===== 统一业务日切换 =====
+    // 所有按日重置/统计的唯一入口：业务动作前、定时器轮询、页面重新可见时调用。
+    // 跨日处理：
+    //  - 重置每日任务（done/claimed 复位，可重新完成领取）；一次性任务保持已完成状态
+    //  - 刷新 todayDate：每日限抽、风控当日频次从新日期起算
+    //  - 保留累计抽奖次数、积分余额/流水，以及审核中（pending/appealed）单据的冻结积分与预占库存，支持跨日审核
+    syncBusinessDay(showHint = false) {
+      const current = todayStr()
+      if (current === this.todayDate) return false
+      const prev = this.todayDate
+      this.todayDate = current
+
+      // 每日任务随业务日重置（保留一次性任务的进度与领取状态）
+      this.tasks.forEach((t) => {
+        if (t.type === 'daily') {
+          t.done = false
+          t.claimed = false
+        }
+      })
+
+      // 冻结权益不随跨日处置：待审核/已申诉单据仍占用冻结积分与预占库存，
+      // 运营可在新业务日继续放行/撤销；累计次数、历史流水/记录同样保留。
+      this.addAuditLog('day-rollover', null,
+        `业务日由 ${prev} 切换为 ${current}：每日任务与每日限次已重置，累计次数与审核中冻结权益保留`)
+      if (showHint) {
+        this.showToast(`🌅 已跨日至 ${current}，每日任务与抽奖次数已刷新，审核中的冻结权益保留`, 'info')
+      }
+      return true
     },
 
     showToast(msg, type = 'info') {
@@ -172,7 +208,8 @@ export const usePlatformStore = defineStore('platform', {
           revoke: '审核撤销',
           appeal: '用户申诉',
           config: '规则变更',
-          'switch-role': '视角切换'
+          'switch-role': '视角切换',
+          'day-rollover': '业务日切换'
         }[action] || action,
         orderId: orderId || '',
         operator: this.role === 'operator' ? `运营(${this.user.name})` : this.user.name,
@@ -223,6 +260,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // ===== 抽奖 =====
     draw(activityId) {
+      this.syncBusinessDay()
       const act = this.activities.find((a) => a.id === activityId)
       if (!act || act.status !== 'running') {
         this.showToast('活动未在运行', 'warn')
@@ -341,12 +379,14 @@ export const usePlatformStore = defineStore('platform', {
 
     // ===== 任务 =====
     completeTask(taskId) {
+      this.syncBusinessDay()
       const t = this.tasks.find((x) => x.id === taskId)
       if (!t || t.claimed) return
       t.done = true
       this.claimTask(taskId)
     },
     claimTask(taskId) {
+      this.syncBusinessDay()
       const t = this.tasks.find((x) => x.id === taskId)
       if (!t || t.claimed || !t.done) return
       t.claimed = true
@@ -361,6 +401,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // ===== 商城兑换 =====
     redeem(goodsId) {
+      this.syncBusinessDay()
       const g = this.goods.find((x) => x.id === goodsId)
       if (!g) return null
       if (g.remain <= 0) {
@@ -464,6 +505,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // 用户申诉（仅本人、且单据处于待审核/已申诉可补充）
     appealRisk(orderId, reason) {
+      this.syncBusinessDay()
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) return false
       if (this.role === 'operator') {
@@ -492,6 +534,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // 运营放行（幂等：仅 pending/appealed 可处理）
     releaseRisk(orderId, note = '') {
+      this.syncBusinessDay()
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) return
       if (this.role !== 'operator') {
@@ -538,6 +581,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // 运营撤销：返还积分、回补库存、业务记录作废（幂等）
     revokeRisk(orderId, note = '') {
+      this.syncBusinessDay()
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) return
       if (this.role !== 'operator') {
@@ -608,7 +652,8 @@ export const usePlatformStore = defineStore('platform', {
     },
 
     saveDayLog() {
-      // 占位：便于记录当天首次行为
+      // 业务动作落账前确保业务日一致（统一走业务日切换）
+      this.syncBusinessDay()
       return true
     },
 
