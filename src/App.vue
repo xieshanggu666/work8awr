@@ -56,7 +56,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { usePlatformStore } from '@/store/platform'
 import ActivityView from '@/components/ActivityView.vue'
 import PointsCenter from '@/components/PointsCenter.vue'
@@ -82,9 +82,24 @@ const tabs = [
 const currentActivity = computed(() => store.activities.find((a) => a.id === currentActivityId.value))
 const activeExists = computed(() => store.activities.some((a) => a.status === 'running'))
 
+// 业务日看门狗：页面长开跨午夜/重新聚焦时自动切换业务日（重置每日任务、日限次按新日期计算）
+let dayTimer = null
+const syncDay = () => store.syncBusinessDay()
+const onVisible = () => { if (!document.hidden) syncDay() }
+
 onMounted(() => {
   store.init()
+  store.syncBusinessDay()
   if (store.activities.length) currentActivityId.value = store.activities[0].id
+  dayTimer = setInterval(syncDay, 30 * 1000)
+  document.addEventListener('visibilitychange', onVisible)
+  window.addEventListener('focus', syncDay)
+})
+
+onBeforeUnmount(() => {
+  clearInterval(dayTimer)
+  document.removeEventListener('visibilitychange', onVisible)
+  window.removeEventListener('focus', syncDay)
 })
 </script>
 

@@ -15,8 +15,12 @@ function drawByWeight(prizes) {
 function nowTime() {
   return new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
+// 业务日按本地时区日期计算（与 nowTime/todayAt 一致，避免 UTC 导致换日点偏移）
 function todayStr() {
-  return new Date().toISOString().slice(0, 10)
+  const d = new Date()
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return `${d.getFullYear()}-${m}-${day}`
 }
 // 今天某时刻（h:m）的时间戳，用于构造演示数据/风控窗口比较
 function todayAt(h, m = 0) {
@@ -172,6 +176,7 @@ export const usePlatformStore = defineStore('platform', {
           revoke: '审核撤销',
           appeal: '用户申诉',
           config: '规则变更',
+          'day-rollover': '业务日切换',
           'switch-role': '视角切换'
         }[action] || action,
         orderId: orderId || '',
@@ -223,6 +228,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // ===== 抽奖 =====
     draw(activityId) {
+      this.syncBusinessDay()  // 先切换业务日，再按当日口径校验限次/风控
       const act = this.activities.find((a) => a.id === activityId)
       if (!act || act.status !== 'running') {
         this.showToast('活动未在运行', 'warn')
@@ -264,7 +270,6 @@ export const usePlatformStore = defineStore('platform', {
         this.points -= cost
         this.addPointRecord(-cost, `参与活动【${act.name}】`)
       }
-      this.saveDayLog()
       if (prize.rarity !== 'none') {
         const orig = act.prizes.find((p) => p.id === prize.id)
         orig.remain -= 1
@@ -341,12 +346,14 @@ export const usePlatformStore = defineStore('platform', {
 
     // ===== 任务 =====
     completeTask(taskId) {
+      this.syncBusinessDay()  // 跨日先重置每日任务，再允许领取
       const t = this.tasks.find((x) => x.id === taskId)
       if (!t || t.claimed) return
       t.done = true
       this.claimTask(taskId)
     },
     claimTask(taskId) {
+      this.syncBusinessDay()
       const t = this.tasks.find((x) => x.id === taskId)
       if (!t || t.claimed || !t.done) return
       t.claimed = true
@@ -361,6 +368,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // ===== 商城兑换 =====
     redeem(goodsId) {
+      this.syncBusinessDay()  // 先切换业务日，风控日统计按当日口径
       const g = this.goods.find((x) => x.id === goodsId)
       if (!g) return null
       if (g.remain <= 0) {
@@ -464,6 +472,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // 用户申诉（仅本人、且单据处于待审核/已申诉可补充）
     appealRisk(orderId, reason) {
+      this.syncBusinessDay()  // 跨日申诉按当前业务日记录时间
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) return false
       if (this.role === 'operator') {
@@ -492,6 +501,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // 运营放行（幂等：仅 pending/appealed 可处理）
     releaseRisk(orderId, note = '') {
+      this.syncBusinessDay()  // 跨日审核：放行时间按当前业务日记录
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) return
       if (this.role !== 'operator') {
@@ -538,6 +548,7 @@ export const usePlatformStore = defineStore('platform', {
 
     // 运营撤销：返还积分、回补库存、业务记录作废（幂等）
     revokeRisk(orderId, note = '') {
+      this.syncBusinessDay()  // 跨日审核：撤销按当前业务日记录；冻结权益原路返还
       const o = this.riskOrders.find((x) => x.id === orderId)
       if (!o) return
       if (this.role !== 'operator') {
@@ -607,8 +618,26 @@ export const usePlatformStore = defineStore('platform', {
       return true
     },
 
-    saveDayLog() {
-      // 占位：便于记录当天首次行为
+    // ===== 统一业务日切换 =====
+    // 所有日维度业务（每日任务、日限次、风控日统计）共用同一业务日锚点 todayDate。
+    // 在任何业务入口调用：检测到自然日变化则切换业务日。
+    // 切换只做：更新业务日 + 重置每日任务；保留累计次数（records 不清）、
+    // 保留未结冻结权益（审核单/冻结积分/预占库存不动，待运营跨日审核）。
+    syncBusinessDay() {
+      const today = todayStr()
+      if (today === this.todayDate) return false
+      const prev = this.todayDate
+      this.todayDate = today
+      // 每日任务跨日重置（一次性任务保留完成状态）
+      this.tasks.forEach((t) => {
+        if (t.type === 'daily') {
+          t.done = false
+          t.claimed = false
+        }
+      })
+      this.addAuditLog('day-rollover', null,
+        `业务日切换：${prev} → ${today}；每日任务已重置，日限次与风控日统计按新业务日计算（累计次数与未结冻结权益保留）`)
+      this.showToast(`已切换至新业务日 ${today}，每日任务已刷新`, 'info')
       return true
     },
 
@@ -628,6 +657,7 @@ export const usePlatformStore = defineStore('platform', {
       this.showToast(`活动【${a.name}】奖品库存已恢复（风控预占保留）`, 'success')
     },
     createActivity(payload) {
+      this.syncBusinessDay()
       const id = 'act-' + Date.now().toString().slice(-5)
       const act = {
         id,
